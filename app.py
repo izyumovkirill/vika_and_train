@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(layout="wide")
 
@@ -13,7 +15,7 @@ def expected_time_two_elevators(n, f, h, v, p_stops1, p_stops2, t_stop):
             total += min(T1, T2)
     return total / (n * n)
 
-def monte_carlo_two_elevators(n, f, h, v, p_stops1, p_stops2, t_stop, sims=10000):
+def monte_carlo_two_elevators(n, f, h, v, p_stops1, p_stops2, t_stop, sims=1000):
     times = []
     floors = np.arange(1, n + 1)
     for _ in range(sims):
@@ -46,7 +48,6 @@ def train_time(speed, distance):
 
 st.title("Успеет ли Вика на поезд? 🚆")
 
-# Инициализация вероятностей остановок
 if 'p_stops1' not in st.session_state or len(st.session_state.p_stops1) != 21:
     st.session_state.p_stops1 = [0.0] * 21
 if 'p_stops2' not in st.session_state or len(st.session_state.p_stops2) != 21:
@@ -71,7 +72,7 @@ with st.sidebar.expander("🚂 Параметры поезда"):
     train_stop_time = st.number_input("Стоянка поезда (сек)", 0, 240, 30)
 
 with st.sidebar.expander("🎲 Симуляции и опции"):
-    num_simulations = st.number_input("Кол-во симуляций", 1000, 50000, 10000, step=1000)
+    num_simulations = st.number_input("Кол-во симуляций", 1000, 10000, 1000, step=100)
     use_stairs = st.checkbox("Идти по лестнице")
     stairs_time_per_floor = st.number_input("Секунд на этаж (лестница)", 1, 60, 10)
 
@@ -91,12 +92,12 @@ vika_run_time = calculate_vika_travel_time(distance_to_station, vika_avg_speed)
 if use_stairs:
     descent_time = (f - 1) * stairs_time_per_floor
     total_time = descent_time + constant_delay + vika_run_time + time_to_validation
-    diff = total_time - train_full_time
     results = pd.DataFrame({
         "Показатель": [
             "Спуск (лестница)",
             "Константная задержка",
             "Бег до станции",
+            "Валидация билета",
             "Суммарное время поезда",
             "Общее время (лестница)",
             "Разница (Вика - поезд)"
@@ -105,9 +106,10 @@ if use_stairs:
             f"{descent_time:.2f}",
             f"{constant_delay:.2f}",
             f"{vika_run_time:.2f}",
+            f"{time_to_validation:.2f}",
             f"{train_full_time:.2f}",
             f"{total_time:.2f}",
-            f"{diff:.2f}"
+            f"{total_time - train_full_time:.2f}"
         ]
     })
     final_time = total_time
@@ -115,15 +117,15 @@ else:
     lift_mc = monte_carlo_two_elevators(n, f, h, v, p_stops1, p_stops2, t_stop, int(num_simulations))
     descent_mc = monte_carlo_descent_time(f, h, v, p_stops1, t_stop, int(num_simulations))
     total_time_mc = lift_mc + descent_mc + constant_delay + vika_run_time + time_to_validation
-    diff = total_time_mc - train_full_time
     results = pd.DataFrame({
         "Показатель": [
-            "Лифт и прибытие (Монте-Карло)",
-            "Спуск (Монте-Карло)",
+            "Лифт и прибытие (MC)",
+            "Спуск (MC)",
             "Константная задержка",
             "Бег до станции",
+            "Валидация билета",
             "Суммарное время поезда",
-            "Общее время (Монте-Карло)",
+            "Общее время (MC)",
             "Разница (Вика - поезд)"
         ],
         "Секунды": [
@@ -131,12 +133,86 @@ else:
             f"{descent_mc:.2f}",
             f"{constant_delay:.2f}",
             f"{vika_run_time:.2f}",
+            f"{time_to_validation:.2f}",
             f"{train_full_time:.2f}",
             f"{total_time_mc:.2f}",
-            f"{diff:.2f}"
+            f"{total_time_mc - train_full_time:.2f}"
         ]
     })
     final_time = total_time_mc
+
+vis_segments = []
+if use_stairs:
+    start = 0.0
+
+    vis_segments.append({"actor": "Вика", "segment": "Спуск (лестница)", "start": start, "end": start + descent_time})
+    start += descent_time
+
+    vis_segments.append({"actor": "Вика", "segment": "Двери/турникет", "start": start, "end": start + constant_delay})
+    start += constant_delay
+
+    vis_segments.append({"actor": "Вика", "segment": "Бег до станции", "start": start, "end": start + vika_run_time})
+    start += vika_run_time
+
+    vis_segments.append({"actor": "Вика", "segment": "Валидация билета", "start": start, "end": start + time_to_validation})
+else:
+    start = 0.0
+
+    total_lift = lift_mc + descent_mc
+    vis_segments.append({"actor": "Вика", "segment": "Лифт ожидание+езда", "start": start, "end": start + total_lift})
+    start += total_lift
+
+    vis_segments.append({"actor": "Вика", "segment": "Двери/турникет", "start": start, "end": start + constant_delay})
+    start += constant_delay
+
+    vis_segments.append({"actor": "Вика", "segment": "Бег до станции", "start": start, "end": start + vika_run_time})
+    start += vika_run_time
+
+    vis_segments.append({"actor": "Вика", "segment": "Валидация билета", "start": start, "end": start + time_to_validation})
+
+vis_segments.append({"actor": "Поезд", "segment": "Движение поезда", "start": 0.0, "end": train_full_time - train_stop_time})
+vis_segments.append({"actor": "Поезд", "segment": "Стоянка поезда", "start": train_full_time - train_stop_time, "end": train_full_time})
+
+vis_df = pd.DataFrame(vis_segments)
+
+fig = make_subplots(rows=1, cols=1, specs=[[{"type": "bar"}]])
+colors = {
+    "Лифт ожидание+езда": "#1f77b4",
+    "Двери/турникет": "#ff7f0e",
+    "Бег до станции": "#2ca02c",
+    "Валидация билета": "#d62728",
+    "Спуск (лестница)": "#9467bd",
+    "Движение поезда": "#8c564b",
+    "Стоянка поезда": "#e377c2",
+}
+for _, r in vis_df.iterrows():
+    fig.add_trace(
+        go.Bar(
+            x=[r["end"] - r["start"]],
+            y=[r["actor"]],
+            base=r["start"],
+            orientation="h",
+            name=r["segment"],
+            marker_color=colors[r["segment"]],
+            hovertemplate=f"{r['actor']}, {r['segment']}<br> от {r['start']:.2f} до {r['end']:.2f} с"
+        ),
+        row=1, col=1
+    )
+fig.update_layout(
+    height=300,
+    barmode="stack",
+    bargap=0,
+    bargroupgap=0,
+    hovermode="x unified",
+    title="Сегменты пути: Вика vs Поезд"
+)
+fig.update_yaxes(
+    tickvals=[0, 1],
+    ticktext=["Вика", "Поезд"],
+    row=1, col=1
+)
+fig.update_xaxes(title_text="Время, сек", row=1, col=1)
+st.plotly_chart(fig, use_container_width=True)
 
 st.table(results.set_index("Показатель"))
 
